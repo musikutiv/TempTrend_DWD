@@ -1,0 +1,110 @@
+---
+title: "TempTrend_DWD"
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+```{r}
+library(rvest)
+library(stringr)
+library(httr)
+library(dplyr)
+library(readr)
+library(lubridate)
+library(fs)
+```
+
+
+
+```{r}
+# Basis-URL
+base_url <- "https://opendata.dwd.de/climate_environment/CDC/observations_germany/climate/10_minutes/air_temperature/historical/"
+
+# Zielverzeichnis
+dir_create("dwd_data")
+
+# 1. Scrape .zip-Dateien
+zip_links <- read_html(base_url) %>%
+  html_elements("a") %>%
+  html_attr("href") %>%
+  str_subset("\\.zip$") %>%
+  paste0(base_url, .)
+
+# Optional: Nur bestimmte Stationen laden, z. B. 02480 (Berlin-Tempelhof)
+# zip_links <- zip_links[str_detect(zip_links, "02480")]
+
+# 2. Herunterladen und entpacken
+for (url in zip_links) {
+  zip_name <- basename(url)
+  zip_path <- file.path("dwd_data", zip_name)
+  txt_dir <- "dwd_data/unzipped"
+  
+  # Nur herunterladen, wenn Datei nicht existiert
+  if (!file_exists(zip_path)) {
+    message("Lade: ", zip_name)
+    download.file(url, destfile = zip_path, mode = "wb")
+  }
+
+  # Entpacken
+  unzip(zip_path, exdir = txt_dir)
+}
+```
+
+
+```{r}
+library(readr)
+library(dplyr)
+library(purrr)
+library(lubridate)
+
+# Zielspaltennamen (laut DWD-Doku)
+col_names <- c("STATIONS_ID", "MESS_DATUM", "QN", "PP_10", "TT_10", "TM5_10", "RF_10", "TD_10")
+
+safe_read <- function(file) {
+  tryCatch({
+    read_delim(
+      file,
+      delim = ";",
+      skip = 1,
+      col_names = col_names,
+      col_types = cols(.default = "c"),  # alles als Char einlesen
+      locale = locale(decimal_mark = ".", grouping_mark = "", encoding = "UTF-8"),
+      trim_ws = TRUE
+    ) %>%
+      mutate(source_file = basename(file))
+  }, error = function(e) {
+    message("Fehler beim Einlesen von: ", file, " → ", e$message)
+    NULL
+  })
+}
+```
+
+```{r}
+convert_types <- function(df) {
+  df %>%
+    mutate(
+      STATIONS_ID = as.integer(STATIONS_ID),
+      MESS_DATUM = ymd_hm(MESS_DATUM),
+      QN = as.integer(QN),
+      PP_10 = na_if(as.numeric(PP_10), -999),
+      TT_10 = na_if(as.numeric(TT_10), -999),
+      TM5_10 = na_if(as.numeric(TM5_10), -999),
+      RF_10 = na_if(as.numeric(RF_10), -999),
+      TD_10 = na_if(as.numeric(TD_10), -999)
+    )
+}
+```
+
+
+```{r, }
+txt_files <- list.files("dwd_data/unzipped", pattern = "\\.txt$", full.names = TRUE)
+# txt_files <- head(txt_files, 10)
+
+# Schrittweise: Einlesen → Umwandeln → Zusammenfügen
+all_data <- map(txt_files, safe_read) %>%
+  map(convert_types) %>%
+  bind_rows()
+```
+
