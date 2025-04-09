@@ -1,0 +1,264 @@
+---
+title: "Metadaten"
+author: "Tobias Straub"
+format: html
+toc: true
+code-fold: true
+---
+
+```{r init, message=F, warning=F, error=F}
+suppressPackageStartupMessages({
+  library(rvest)
+  library(readr)
+  library(dplyr)
+  library(readr)
+  library(stringr)
+  library(purrr)
+  library(fs)
+  library(lubridate)
+  library(stringi)
+  library(ggplot2)
+  library(tidyr)
+  library(sf)
+  library(rnaturalearth)
+  library(rnaturalearthdata)
+})
+```
+
+## Metadaten für 10 min Lufttemperatur
+
+## Download von opendata.dwd
+
+source: https://opendata.dwd.de/climate_environment/CDC/observations_germany/climate/10_minutes/air_temperature/meta_data/
+
+```{r}
+if (!file.exists("dwd_data/meta/")) {
+  
+  meta_base_url <- "https://opendata.dwd.de/climate_environment/CDC/observations_germany/climate/10_minutes/air_temperature/meta_data/"
+  
+  # HTML einlesen & ZIP-Links extrahieren
+  meta_page <- read_html(meta_base_url)
+  
+  zip_links <- meta_page %>%
+    html_elements("a") %>%
+    html_attr("href") %>%
+    str_subset("^Meta_Daten_zehn_min_tu_\\d{5}\\.zip$") %>%
+    paste0(meta_base_url, .)
+  
+  # Zielordner
+  meta_dir <- "dwd_data/meta/"
+  dir_create(meta_dir)
+  
+  # ZIPs herunterladen & entpacken
+  walk(zip_links, function(url) {
+    file <- basename(url)
+    zip_path <- file.path(meta_dir, file)
+    station_id <- str_extract(file, "\\d{5}")
+    
+    if (!file_exists(zip_path)) {
+      message("Lade: ", file)
+      download.file(url, destfile = zip_path, mode = "wb")
+    }
+    
+    unzip(zip_path, exdir = file.path(meta_dir, station_id))
+  })
+}
+```
+
+## Metadaten einlesen
+
+```{r, message=F, warning=F}
+if (!file.exists("meta_go_clean.rds")) {
+  
+  # Alle entpackten txt-Dateien auflisten
+  txt_files <- dir_ls("dwd_data/meta", recurse = TRUE, regexp = "\\.txt$")
+  
+  # Nur Dateien, die "historie" oder "Metadaten" im Namen tragen
+  relevant_txts <- txt_files[str_detect(txt_files, "(historie|Metadaten)")]
+  
+  # Einlesefunktion mit Stations-ID-Erkennung (ALT)
+  read_meta_table <- function(file) {
+    station_id <- str_extract(file, "\\d{5}")
+    
+    tryCatch({
+      df <- read_delim(
+        file,
+        delim = ";",
+        col_types = cols(.default = "c"),
+        locale = locale(encoding = "Latin1"),
+        skip = 0,
+        trim_ws = TRUE
+      )
+      df$STATIONS_ID <- station_id
+      df$source_file <- basename(file)
+      df
+    }, error = function(e) {
+      message("Fehler in Datei: ", file)
+      NULL
+    })
+  }
+  
+  
+  # Alles einlesen
+  meta_list <- map(relevant_txts, read_meta_table)
+  
+  # In DataFrame zusammenführen
+  meta_df <- bind_rows(meta_list)
+  
+  # Cleanup
+  meta_geo <- meta_df %>%
+    filter(!is.na(Stations_id), !is.na(Stationsname)) %>%
+    distinct()
+  
+  # Datentyp Umwandlung
+  meta_geo_clean <- meta_geo %>%
+    mutate(
+      # ID als integer
+      STATIONS_ID = as.integer(STATIONS_ID),
+      
+      # Koordinaten & Höhe numerisch
+      Stationshoehe = as.numeric(Stationshoehe),
+      Geogr.Breite = as.numeric(Geogr.Breite),
+      Geogr.Laenge = as.numeric(Geogr.Laenge),
+      
+      # Datumsangaben
+      von_datum = ymd(von_datum),
+      bis_datum = ymd(bis_datum),
+      
+      # Unicode bereinigen (z. B. ß, ä etc.)
+      Stationsname = stri_trans_general(Stationsname, "latin-ascii")
+    ) 
+  
+  saveRDS(meta_geo_clean, "meta_go_clean.rds")
+} else {
+  meta_geo_clean <- readRDS("meta_go_clean.rds")
+}
+```
+
+#### erste 100 Zeilen
+
+```{r}
+head(meta_geo_clean, 100)
+```
+
+## Überblick
+#### letzte Standorte
+
+```{r}
+# Letzten Eintrag je Station auswählen
+last_pos <- meta_geo_clean %>%
+  group_by(Stations_id) %>%
+  filter(
+    if (all(is.na(bis_datum))) {
+      TRUE
+    } else {
+      bis_datum == max(bis_datum, na.rm = TRUE)
+    }
+  ) %>%
+  ungroup() %>%
+  distinct(Stations_id, .keep_all = TRUE)
+
+# In sf-Objekt umwandeln
+stations_sf <- st_as_sf(
+  last_pos,
+  coords = c("Geogr.Laenge", "Geogr.Breite"),
+  crs = 4326
+)
+
+# Deutschlandkarte laden
+germany <- ne_countries(scale = "medium", country = "Germany", returnclass = "sf")
+```
+
+```{r, width=15, height=15}
+ggplot(data = germany) +
+  geom_sf(fill = "antiquewhite") +
+  geom_sf(data = stations_sf, color = "red", size = 1) +
+  theme_minimal() +
+  labs(title = paste0("aktuelle Positionen der ",nrow(stations_sf)," DWD-Stationen"),
+       subtitle = "Datenquelle: DWD - 10-minütige Temperaturmessungen, Metadaten",
+       x = "Longitude", y = "Latitude")
+```
+#### Stationshöhen, Trend?
+
+```{r}
+
+# Ersetze NA in bis_datum mit aktuellem Datum
+geo_elevation <- meta_geo_clean %>%
+  select(Stations_id, Stationshoehe, von_datum, bis_datum) %>%
+  mutate(
+    bis_datum = if_else(is.na(bis_datum), today(), bis_datum),
+    year_start = year(von_datum),
+    year_end = year(bis_datum)
+  ) %>%
+  drop_na(Stationshoehe)
+```
+
+```{r}
+mean_elevation_trend <- geo_elevation %>%
+  group_by(year_end) %>%
+  summarise(
+    mean_height = mean(Stationshoehe, na.rm = TRUE),
+    n = n()
+  )
+
+median_elevation_trend <- geo_elevation %>%
+  group_by(year_end) %>%
+  summarise(
+    median_height = median(Stationshoehe, na.rm = TRUE),
+    n = n()
+  )
+```
+
+```{r, fig.width=10, fig.height=4}
+ggplot(mean_elevation_trend, aes(x = year_end, y = mean_height)) +
+  geom_line(color = "blue") +
+  geom_point() +
+  labs(title = "Mittlere Stationshöhe über die Zeit",
+       x = "Jahr",
+       y = "Mittlere Stationshöhe [m]") + 
+  theme_bw()
+```
+
+```{r, fig.width=10, fig.height=4}
+# 1. Gruppieren nach Jahr und berechnen:
+summary_year <- geo_elevation %>%
+  group_by(year_end) %>%
+  summarise(
+    mean_height = mean(Stationshoehe, na.rm = TRUE),
+    n_stations = n_distinct(Stations_id)
+  )
+
+# 2. Plot mit zwei Achsen
+ggplot(summary_year, aes(x = year_end)) +
+  geom_line(aes(y = mean_height), color = "blue", size = 1) +
+  geom_line(aes(y = n_stations * 2), color = "darkgreen", linetype = "dashed") +  # skaliert für zweite Achse
+  scale_y_continuous(
+    name = "Mittlere Stationshöhe [m]",
+    sec.axis = sec_axis(~./2, name = "Anzahl Stationen")
+  ) +
+  labs(
+    title = "Entwicklung der Stationshöhe und Anzahl der Stationen",
+    x = "Jahr"
+  ) +
+  theme_minimal()
+```
+
+!! something is wrong with n stations
+
+```{r}
+lm_fit <- lm(Stationshoehe ~ year_end, data = geo_elevation)
+summary(lm_fit)
+```
+
+```{r}
+ggplot(median_elevation_trend, aes(x = year_end, y = median_height)) +
+  geom_line(color = "blue") +
+  geom_point() +
+  labs(title = "Mediane Stationshöhe über die Zeit",
+       x = "Jahr",
+       y = "Mittlere Stationshöhe [m]")
+```
+
+```{r}
+sessionInfo()
+```

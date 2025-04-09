@@ -1,5 +1,9 @@
 project:
   title: "TempTrend_DWD"
+  type: website
 
 editor: visual
 
+website:
+  title: "DWD Temperature Trend"
+  navbar: true
