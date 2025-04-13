@@ -1,0 +1,173 @@
+---
+title: "Messdaten"
+render: false
+---
+
+```{r init, message=F, warning=F, error=F}
+suppressPackageStartupMessages({
+  library(rvest)
+  library(stringr)
+  library(httr)
+  library(dplyr)
+  library(readr)
+  library(lubridate)
+  library(fs)
+  library(purrr)
+  library(ggplot2)
+})
+```
+
+## Messdaten Scrapen
+
+### 10 min Lufttemperatur
+
+download source: https://opendata.dwd.de/climate_environment/CDC/observations_germany/climate/10_minutes/air_temperature/historical/
+
+```{r, scrape_data}
+if (!file.exists("dwd_data")) {
+  # Basis-URL
+  base_url <- "https://opendata.dwd.de/climate_environment/CDC/observations_germany/climate/10_minutes/air_temperature/historical/"
+  
+  # Zielverzeichnis
+  dir_create("dwd_data")
+  
+  # 1. Scrape .zip-Dateien
+  zip_links <- read_html(base_url) %>%
+    html_elements("a") %>%
+    html_attr("href") %>%
+    str_subset("\\.zip$") %>%
+    paste0(base_url, .)
+  
+  # 2. Herunterladen und entpacken
+  for (url in zip_links) {
+    zip_name <- basename(url)
+    zip_path <- file.path("dwd_data", zip_name)
+    txt_dir <- "dwd_data/unzipped"
+    
+    # Nur herunterladen, wenn Datei nicht existiert
+    if (!file_exists(zip_path)) {
+      message("Lade: ", zip_name)
+      download.file(url, destfile = zip_path, mode = "wb")
+    }
+    
+    # Entpacken
+    unzip(zip_path, exdir = txt_dir)
+  }
+}
+```
+
+#### Daten einlesen
+
+```{r read_data}
+if (!file.exists("all_data.rds")) {
+  # Zielspaltennamen (laut DWD-Doku)
+  col_names <- c("STATIONS_ID", "MESS_DATUM", "QN", "PP_10", "TT_10", "TM5_10", "RF_10", "TD_10")
+  
+  safe_read <- function(file) {
+    tryCatch({
+      read_delim(
+        file,
+        delim = ";",
+        skip = 1,
+        col_names = col_names,
+        col_types = cols(.default = "c"),  # alles als Char einlesen
+        locale = locale(decimal_mark = ".", grouping_mark = "", encoding = "UTF-8"),
+        trim_ws = TRUE
+      ) %>%
+        mutate(source_file = basename(file))
+    }, error = function(e) {
+      message("Fehler beim Einlesen von: ", file, " → ", e$message)
+      NULL
+    })
+  }
+  
+  convert_types <- function(df) {
+    df %>%
+      mutate(
+        STATIONS_ID = as.integer(STATIONS_ID),
+        MESS_DATUM = ymd_hm(MESS_DATUM),
+        QN = as.integer(QN),
+        PP_10 = na_if(as.numeric(PP_10), -999),
+        TT_10 = na_if(as.numeric(TT_10), -999),
+        TM5_10 = na_if(as.numeric(TM5_10), -999),
+        RF_10 = na_if(as.numeric(RF_10), -999),
+        TD_10 = na_if(as.numeric(TD_10), -999)
+      )
+  }
+  txt_files <- list.files("dwd_data/unzipped", pattern = "\\.txt$", full.names = TRUE)
+  
+  #txt_files <- head(txt_files, 300)
+  
+  # Schrittweise: Einlesen → Umwandeln → Zusammenfügen
+  all_data <- map(txt_files, safe_read) %>%
+    map(convert_types) %>%
+    bind_rows()
+  
+  saveRDS(all_data, "all_data.rds")
+} else {
+  all_data <- readRDS("all_data.rds")
+}
+```
+
+#### Überblick
+
+```{r data_head}
+head(all_data, 10)
+```
+
+Daten von wie vielen Stationen?
+
+```{r stationsNo}
+length(unique(all_data$STATIONS_ID))
+```
+
+längster Messbereich
+
+```{r longestMeasurementPeriod}
+all_data %>%
+  group_by(STATIONS_ID) %>%
+  summarise(
+    erstes_datum = min(MESS_DATUM),
+    letztes_datum = max(MESS_DATUM),
+    tage = as.numeric(difftime(letztes_datum, erstes_datum, units = "days"))
+  ) %>%
+  arrange(desc(tage)) %>%
+  slice(1)
+```
+
+Messperioden aller Stationen
+
+```{r allPeriods}
+# Daten aggregieren: Start- und Enddatum pro Station
+messperioden <- all_data %>%
+  group_by(STATIONS_ID) %>%
+  summarise(
+    erstes_datum = min(MESS_DATUM),
+    letztes_datum = max(MESS_DATUM),
+    .groups = "drop"
+  )
+
+# Sortierung für saubere Darstellung
+messperioden <- messperioden %>%
+  arrange(erstes_datum) %>%
+  mutate(STATIONS_ID = factor(STATIONS_ID, levels = unique(STATIONS_ID)))
+```
+
+```{r allPeriodsVisual, fig.width=10, fig.height=25}
+# Plot: Gantt-ähnlich
+ggplot(messperioden, aes(y = STATIONS_ID)) +
+  geom_segment(aes(x = erstes_datum, xend = letztes_datum,
+                   yend = STATIONS_ID), linewidth = 0.5) +
+  geom_point(aes(x = erstes_datum), color = "darkgreen", size = 2) +
+  geom_point(aes(x = letztes_datum), color = "darkred", size = 2) +
+  labs(
+    x = "Datum", y = "Stations-ID"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 4)) +
+  scale_x_datetime(date_labels = "%Y", date_breaks = "2 years")
+```
+
+```{r}
+sessionInfo()
+```

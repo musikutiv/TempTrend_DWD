@@ -142,6 +142,7 @@ head(meta_geo_clean, 100)
 ```
 
 ## Überblick
+
 #### letzte Standorte
 
 ```{r}
@@ -178,6 +179,7 @@ ggplot(data = germany) +
        subtitle = "Datenquelle: DWD - 10-minütige Temperaturmessungen, Metadaten",
        x = "Longitude", y = "Latitude")
 ```
+
 #### Stationshöhen, Trend?
 
 ```{r}
