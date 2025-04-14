@@ -1,0 +1,10 @@
+---
+title: "DWD Temperature Trends"
+format: html
+---
+
+## Welcome
+
+This site presents an analysis of temperature trends using DWD data.
+
+Use the navigation bar above to explore the sections on Messdaten and Metadaten.

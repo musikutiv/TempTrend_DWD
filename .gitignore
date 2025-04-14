@@ -5,9 +5,9 @@
 dwd_data
 renv
 .renv.lock
+renv.lock
 meta_go_clean.rds
 all_data.rds
 .DS_Store
 /.quarto/
-*.rmarkdown
 _site/
