@@ -2,10 +2,8 @@
 .Rhistory
 .RData
 .Ruserdata
-dwd_data
 renv
-.renv.lock
-renv.lock
+dwd_data
 meta_go_clean.rds
 all_data.rds
 .DS_Store
