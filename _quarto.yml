@@ -1,6 +1,7 @@
 project:
   title: "TempTrend_DWD"
   type: website
+  output-dir: docs
 
 editor: visual
 
@@ -15,3 +16,4 @@ format:
   html:
     theme: cosmo
     toc: true
+    
