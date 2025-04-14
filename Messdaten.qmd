@@ -1,6 +1,9 @@
 ---
 title: "Messdaten"
-render: false
+author: "Tobias Straub"
+format: html
+toc: true
+code-fold: true
 ---
 
 ```{r init, message=F, warning=F, error=F}
